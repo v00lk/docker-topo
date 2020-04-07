@@ -10,6 +10,9 @@ import netaddr
 import subprocess
 from pyroute2 import IPDB
 from pyroute2 import netns
+from pyroute2.ipdb import transactional
+transactional.SYNC_TIMEOUT = 30
+
 from packaging import version
 if sys.platform != 'darwin':
   from pyroute2 import NetNS
