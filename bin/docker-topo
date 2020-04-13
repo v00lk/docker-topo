@@ -11,6 +11,7 @@ import subprocess
 from pyroute2 import IPDB
 from pyroute2 import netns
 from pyroute2.ipdb import transactional
+import multiprocessing
 transactional.SYNC_TIMEOUT = 30
 
 from packaging import version
@@ -260,7 +261,12 @@ def parse_v2(t_yml):
         parse_endpoints(devices, link_endpoints, link, idx)
     return devices, links
 
+
 class Device(object):
+    __slots__ = ["name", "hostname", "type", "image", "command", "environment", "pid",
+                 "sandbox", "default_network", "start_mode", "sysctls",
+                 "entry_cmd", "interfaces", "volumes", "ports", "container"]
+
     def __init__(self, name):
         LOG.debug('\tConstructing device {}'.format(name))
         self.name = '_'.join([PREFIX, name])
@@ -585,26 +591,36 @@ class Veth(object):
         if not veth:
             self._create()
             veth = self._get(self.sideA)
-        LOG.debug("Connecting {} to {}".format(veth.ifname, device.name))
+        LOG.debug("Connecting(VETH) {} to {}".format(veth.ifname, device.name))
         with veth as i:
             i.ifname = interface
             i.net_ns_fd = ns_fd
             i.up()
             # TODO Could add veth.add_ip('1.1.1.1/24') and get rid of set_ips.sh script
             LOG.debug("Create an interface for container {}: {}".format(device.name, i.review()))
+            print("with_closed")
+        os.close(ns_fd)
+        print("CLOSED_FD")
         ns_name = device.sandbox.split('/')[-1]
-        with IPDB(nl=NetNS(ns_name)) as ns:
-            with ns.interfaces[interface] as i:
-                if int(i.address[1], 16) & 0x02 > 0:
-                    # MLAG mechanism uses the "locally administered bit" from the MAC address
-                    # and practically, the Mlag agent will core when set.
-                    LOG.debug(f"Changing interface mac from {i.address}")
-                    i.set_address(i.address[0] + "0" + i.address[2:]).commit()
-                    LOG.debug(f"to {i.address}")
-                i.up()
- 
-
+        print(f"ns_name={ns_name}")
+        print(f"device.sandbox={device.sandbox}")
+        print(f"interface={interface}")
+        ns = IPDB(nl=NetNS(ns_name))
+        print("FIRST_WITH")
+        with ns.interfaces[interface] as i:
+            print("BEFORE IF")
+            if int(i.address[1], 16) & 0x02 > 0:
+                print("AFTER_IF")
+                # MLAG mechanism uses the "locally administered bit" from the MAC address
+                # and practically, the Mlag agent will core when set.
+                LOG.debug(f"Changing interface mac from {i.address}")
+                i.set_address(i.address[0] + "0" + i.address[2:]).commit()
+                LOG.debug(f"to {i.address}")
+            i.up()
+        del(ns)
 class Link(object):
+    __slots__ = ["link_type", "name", "network", "driver", "opts"]
+
     def __init__(self, link_type, name, link_driver=None, driver_opts=None):
         LOG.debug('\tConstructing a {} link with name {}'.format(link_type, name))
         self.name = '_'.join([PREFIX, name])
@@ -653,7 +669,7 @@ class Link(object):
             return None
 
     def connect(self, device, interface):
-        LOG.debug('\tConnecting {}-type link to {}'.format(self.driver, device.name))
+        LOG.debug('\tConnecting(LINK) {}-type link to {}'.format(self.driver, device.name))
         if not self.network:
             self.get_or_create()
         if self.driver == 'veth':
@@ -776,8 +792,8 @@ def main():
     # Main logic
     if create:
         started = [device.start() == 0 for (name, device) in devices.items()]
-        
         LOG.info(''.join(["\nalias {}='{}'".format(name, device.entry_cmd) for (name, device) in devices.items()]))
+
 
         if all(started):
             LOG.info('All devices started successfully')
@@ -792,6 +808,7 @@ def main():
         else:
             LOG.info('Devices have not been started')
             return 1
+
     elif destroy:
         killed = [device.kill() == 0 for (name, device) in devices.items()]
         # Regardless of whether we killed or not, try to prune unused objects
